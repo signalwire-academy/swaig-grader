@@ -1,32 +1,49 @@
 name: 'SWAIG Grader'
-description: 'Grade SignalWire AI Agent assignments using swaig-test'
-author: 'SignalWire'
+description: 'Grade SignalWire AI Agent assignments using swaig-test CLI'
+author: 'SignalWire Academy'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
 
 inputs:
-  agent-file:
-    description: 'Path to the agent Python file'
-    required: true
+  solution-file:
+    description: 'Path to the student solution file'
+    required: false
     default: 'solution/agent.py'
-  config-file:
-    description: 'Path to the grading configuration YAML'
-    required: true
+  grading-config:
+    description: 'Path to grading configuration YAML'
+    required: false
     default: 'tests/grading.yaml'
   python-version:
     description: 'Python version to use'
     required: false
     default: '3.11'
+  post-results:
+    description: 'Post results to GitHub Issue'
+    required: false
+    default: 'true'
+  fail-on-not-passing:
+    description: 'Fail the workflow if score is below passing'
+    required: false
+    default: 'false'
 
 outputs:
   score:
-    description: 'Total score achieved'
+    description: 'Total points earned'
+    value: ${{ steps.grade.outputs.score }}
   max-score:
-    description: 'Maximum possible score'
+    description: 'Maximum possible points'
+    value: ${{ steps.grade.outputs.max_score }}
   percentage:
     description: 'Percentage score'
+    value: ${{ steps.grade.outputs.percentage }}
   passed:
     description: 'Whether the submission passed'
-  report:
-    description: 'Markdown formatted grade report'
+    value: ${{ steps.grade.outputs.passed }}
+  results-json:
+    description: 'Full results as JSON'
+    value: ${{ steps.grade.outputs.results_json }}
 
 runs:
   using: 'composite'
@@ -35,27 +52,278 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python-version }}
-    
+
     - name: Install dependencies
       shell: bash
-      run: |
-        pip install -q signalwire-agents pyyaml
-    
-    - name: Run grader
-      id: grade
+      run: pip install -q signalwire-agents pyyaml
+
+    - name: Check solution exists
+      id: check
       shell: bash
       run: |
-        python ${{ github.action_path }}/grade.py \
-          --agent "${{ inputs.agent-file }}" \
-          --config "${{ inputs.config-file }}" \
-          --output results.json
-        
-        # Set outputs
-        echo "score=$(jq -r '.score' results.json)" >> $GITHUB_OUTPUT
-        echo "max-score=$(jq -r '.max_score' results.json)" >> $GITHUB_OUTPUT
-        echo "percentage=$(jq -r '.percentage' results.json)" >> $GITHUB_OUTPUT
-        echo "passed=$(jq -r '.passed' results.json)" >> $GITHUB_OUTPUT
+        if [ -f "${{ inputs.solution-file }}" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "::warning::Solution file not found: ${{ inputs.solution-file }}"
+        fi
 
-branding:
-  icon: 'check-circle'
-  color: 'green'
+    - name: Run grading
+      if: steps.check.outputs.exists == 'true'
+      id: grade
+      shell: bash
+      env:
+        SOLUTION_FILE: ${{ inputs.solution-file }}
+        GRADING_CONFIG: ${{ inputs.grading-config }}
+      run: |
+        python << 'GRADESCRIPT'
+        import subprocess
+        import json
+        import yaml
+        import sys
+        import os
+
+        solution_file = os.environ['SOLUTION_FILE']
+        config_path = os.environ['GRADING_CONFIG']
+
+        # Load test config
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        results = {
+            'assignment': config['assignment'],
+            'checks': [],
+            'score': 0,
+            'max_score': 0,
+            'passed': False
+        }
+
+        for check in config['checks']:
+            check_result = {
+                'id': check['id'],
+                'name': check['name'],
+                'max_points': check['points'],
+                'points': 0,
+                'passed': False,
+                'output': ''
+            }
+
+            try:
+                agent_file = check.get('file', solution_file)
+                agent_class = check.get('agent_class')
+                
+                base_cmd = ['swaig-test', agent_file]
+                if agent_class:
+                    base_cmd.extend(['--agent-class', agent_class])
+
+                if check['type'] == 'instantiate':
+                    result = subprocess.run(
+                        base_cmd + ['--list-tools'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    check_result['passed'] = result.returncode == 0
+                    check_result['output'] = result.stderr if result.returncode != 0 else ''
+
+                elif check['type'] == 'swml_valid':
+                    result = subprocess.run(
+                        base_cmd + ['--dump-swml', '--raw'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        try:
+                            swml = json.loads(result.stdout)
+                            check_result['passed'] = 'sections' in swml and 'main' in swml['sections']
+                        except json.JSONDecodeError:
+                            check_result['output'] = 'Invalid JSON output'
+                    else:
+                        check_result['output'] = result.stderr
+
+                elif check['type'] == 'swml_contains':
+                    result = subprocess.run(
+                        base_cmd + ['--dump-swml', '--raw'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        swml_text = result.stdout.lower()
+                        required = check.get('require', [])
+                        check_result['passed'] = all(
+                            r.get('text', '').lower() in swml_text for r in required
+                        )
+                    else:
+                        check_result['output'] = result.stderr
+
+                elif check['type'] == 'function_exists':
+                    result = subprocess.run(
+                        base_cmd + ['--list-tools'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    func_name = check.get('function', '')
+                    check_result['passed'] = func_name.lower() in result.stdout.lower()
+                    if not check_result['passed']:
+                        check_result['output'] = f"Function '{func_name}' not found"
+
+                elif check['type'] == 'exec':
+                    cmd = base_cmd + ['--exec', check['function']]
+                    for key, value in check.get('args', {}).items():
+                        cmd.extend([f'--{key}', str(value)])
+
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                    if result.returncode == 0:
+                        output_lower = result.stdout.lower()
+                        expected = check.get('expect', {}).get('stdout_contains', [])
+                        check_result['passed'] = all(
+                            exp.lower() in output_lower for exp in expected
+                        )
+                        if not check_result['passed']:
+                            check_result['output'] = f"Expected: {expected}"
+                    else:
+                        check_result['output'] = result.stderr
+
+                elif check['type'] == 'multi_agent':
+                    result = subprocess.run(
+                        base_cmd + ['--list-agents'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    expected_agents = check.get('agents', [])
+                    check_result['passed'] = all(
+                        agent.lower() in result.stdout.lower() for agent in expected_agents
+                    )
+
+            except subprocess.TimeoutExpired:
+                check_result['output'] = 'Timeout exceeded'
+            except Exception as e:
+                check_result['output'] = str(e)[:200]
+
+            if check_result['passed']:
+                check_result['points'] = check['points']
+
+            results['checks'].append(check_result)
+
+        # Calculate totals
+        results['max_score'] = sum(c['max_points'] for c in results['checks'])
+        results['score'] = sum(c['points'] for c in results['checks'])
+        results['percentage'] = round(results['score'] / results['max_score'] * 100, 1) if results['max_score'] > 0 else 0
+        results['passed'] = results['percentage'] >= config['assignment']['passing_score']
+
+        # Save results
+        with open('grading-results.json', 'w') as f:
+            json.dump(results, f, indent=2)
+
+        # Set outputs
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f"score={results['score']}\n")
+            f.write(f"max_score={results['max_score']}\n")
+            f.write(f"percentage={results['percentage']}\n")
+            f.write(f"passed={str(results['passed']).lower()}\n")
+            f.write(f"results_json={json.dumps(results)}\n")
+
+        # Print summary
+        print(f"Score: {results['score']}/{results['max_score']} ({results['percentage']}%)")
+        print(f"Status: {'PASSED' if results['passed'] else 'NOT PASSING'}")
+
+        GRADESCRIPT
+
+    - name: Generate markdown report
+      if: steps.check.outputs.exists == 'true'
+      id: report
+      shell: bash
+      run: |
+        python << 'REPORTSCRIPT'
+        import json
+        import yaml
+        import os
+
+        with open('grading-results.json') as f:
+            results = json.load(f)
+
+        config_path = os.environ.get('GRADING_CONFIG', 'tests/grading.yaml')
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        report = f"## Grading Results\n\n"
+        report += f"**Assignment:** {results['assignment']['name']}\n"
+        report += f"**Score:** {results['score']}/{results['max_score']} ({results['percentage']}%)\n"
+        report += f"**Status:** {'PASSED ✅' if results['passed'] else 'NOT PASSING ❌'}\n\n"
+
+        report += "### Checks\n\n"
+        report += "| # | Check | Points | Status |\n"
+        report += "|---|-------|--------|--------|\n"
+
+        for i, check in enumerate(results['checks']):
+            status = '✅' if check['passed'] else '❌'
+            report += f"| {i+1} | {check['name']} | {check['points']}/{check['max_points']} | {status} |\n"
+
+        # Add details for failed checks
+        failed = [c for c in results['checks'] if not c['passed'] and c['output']]
+        if failed:
+            report += "\n### Details\n\n"
+            for check in failed:
+                report += f"**{check['name']}:** {check['output']}\n\n"
+
+        # Add feedback
+        report += "\n---\n\n"
+        if results['passed']:
+            report += config.get('feedback', {}).get('pass', 'Great work!')
+        else:
+            report += config.get('feedback', {}).get('fail', 'Keep trying!')
+
+        report += f"\n\n---\n*Graded at: $(date -u +%Y-%m-%dT%H:%M:%SZ)*"
+
+        with open('grading-report.md', 'w') as f:
+            f.write(report)
+
+        print(report)
+        REPORTSCRIPT
+      env:
+        GRADING_CONFIG: ${{ inputs.grading-config }}
+
+    - name: Post results to issue
+      if: steps.check.outputs.exists == 'true' && inputs.post-results == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('grading-report.md', 'utf8');
+
+          // Find or create grading issue
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            labels: 'grading',
+            state: 'open'
+          });
+
+          if (issues.length > 0) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issues[0].number,
+              body: report
+            });
+          } else {
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Grading Results',
+              body: report,
+              labels: ['grading']
+            });
+          }
+
+    - name: Upload results artifact
+      if: steps.check.outputs.exists == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: grading-results
+        path: |
+          grading-results.json
+          grading-report.md
+        retention-days: 90
+
+    - name: Check pass status
+      if: steps.check.outputs.exists == 'true' && inputs.fail-on-not-passing == 'true' && steps.grade.outputs.passed == 'false'
+      shell: bash
+      run: |
+        echo "::error::Submission did not meet passing threshold"
+        exit 1
