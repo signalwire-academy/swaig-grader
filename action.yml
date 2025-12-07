@@ -268,7 +268,9 @@ runs:
         else:
             report += config.get('feedback', {}).get('fail', 'Keep trying!')
 
-        report += f"\n\n---\n*Graded at: $(date -u +%Y-%m-%dT%H:%M:%SZ)*"
+        from datetime import datetime, timezone
+        graded_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        report += f"\n\n---\n*Graded at: {graded_at}*"
 
         with open('grading-report.md', 'w') as f:
             f.write(report)
