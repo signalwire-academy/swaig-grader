@@ -27,6 +27,10 @@ inputs:
     description: 'Fail the workflow if score is below passing'
     required: false
     default: 'false'
+  next-assignment:
+    description: 'GitHub Classroom link to the next assignment (shown on 100% completion)'
+    required: false
+    default: ''
 
 outputs:
   score:
@@ -295,11 +299,21 @@ runs:
       uses: actions/github-script@v7
       env:
         PASSED: ${{ steps.grade.outputs.passed }}
+        PERCENTAGE: ${{ steps.grade.outputs.percentage }}
+        NEXT_ASSIGNMENT: ${{ inputs.next-assignment }}
       with:
         script: |
           const fs = require('fs');
-          const report = fs.readFileSync('grading-report.md', 'utf8');
+          let report = fs.readFileSync('grading-report.md', 'utf8');
           const passed = process.env.PASSED === 'true';
+          const percentage = parseFloat(process.env.PERCENTAGE);
+          const nextAssignment = process.env.NEXT_ASSIGNMENT;
+          const isPerfect = percentage === 100.0;
+
+          // Add next assignment link if 100% and link provided
+          if (isPerfect && nextAssignment) {
+            report += `\n\n---\n\n🎉 **Perfect score!** Ready for the next challenge?\n\n👉 [**Start Next Assignment**](${nextAssignment})`;
+          }
 
           // Find or create grading issue
           const { data: issues } = await github.rest.issues.listForRepo({
@@ -329,7 +343,7 @@ runs:
             issueNumber = newIssue.number;
           }
 
-          // If passed, add 'passed' label and close the issue
+          // If passed, add 'passed' label. Only close if 100%
           if (passed) {
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
@@ -337,12 +351,16 @@ runs:
               issue_number: issueNumber,
               labels: ['passed']
             });
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issueNumber,
-              state: 'closed'
-            });
+
+            // Only close the issue if score is 100%
+            if (isPerfect) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                state: 'closed'
+              });
+            }
           }
 
     - name: Upload results artifact
