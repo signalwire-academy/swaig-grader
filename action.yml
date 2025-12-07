@@ -146,9 +146,19 @@ runs:
                     if result.returncode == 0:
                         swml_text = result.stdout.lower()
                         required = check.get('require', [])
-                        check_result['passed'] = all(
-                            r.get('text', '').lower() in swml_text for r in required
-                        )
+                        all_found = True
+                        for r in required:
+                            text = r.get('text', '').lower()
+                            # Check for either speech_fillers or deprecated fillers field
+                            if text == 'speech_fillers':
+                                if 'speech_fillers' not in swml_text and 'fillers' not in swml_text:
+                                    all_found = False
+                                    break
+                            else:
+                                if text not in swml_text:
+                                    all_found = False
+                                    break
+                        check_result['passed'] = all_found
                     else:
                         check_result['output'] = result.stderr
 
