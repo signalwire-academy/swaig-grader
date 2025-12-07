@@ -1,0 +1,61 @@
+name: 'SWAIG Grader'
+description: 'Grade SignalWire AI Agent assignments using swaig-test'
+author: 'SignalWire'
+
+inputs:
+  agent-file:
+    description: 'Path to the agent Python file'
+    required: true
+    default: 'solution/agent.py'
+  config-file:
+    description: 'Path to the grading configuration YAML'
+    required: true
+    default: 'tests/grading.yaml'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.11'
+
+outputs:
+  score:
+    description: 'Total score achieved'
+  max-score:
+    description: 'Maximum possible score'
+  percentage:
+    description: 'Percentage score'
+  passed:
+    description: 'Whether the submission passed'
+  report:
+    description: 'Markdown formatted grade report'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+    
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install -q signalwire-agents pyyaml
+    
+    - name: Run grader
+      id: grade
+      shell: bash
+      run: |
+        python ${{ github.action_path }}/grade.py \
+          --agent "${{ inputs.agent-file }}" \
+          --config "${{ inputs.config-file }}" \
+          --output results.json
+        
+        # Set outputs
+        echo "score=$(jq -r '.score' results.json)" >> $GITHUB_OUTPUT
+        echo "max-score=$(jq -r '.max_score' results.json)" >> $GITHUB_OUTPUT
+        echo "percentage=$(jq -r '.percentage' results.json)" >> $GITHUB_OUTPUT
+        echo "passed=$(jq -r '.passed' results.json)" >> $GITHUB_OUTPUT
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
