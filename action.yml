@@ -293,10 +293,13 @@ runs:
     - name: Post results to issue
       if: steps.check.outputs.exists == 'true' && inputs.post-results == 'true'
       uses: actions/github-script@v7
+      env:
+        PASSED: ${{ steps.grade.outputs.passed }}
       with:
         script: |
           const fs = require('fs');
           const report = fs.readFileSync('grading-report.md', 'utf8');
+          const passed = process.env.PASSED === 'true';
 
           // Find or create grading issue
           const { data: issues } = await github.rest.issues.listForRepo({
@@ -306,20 +309,39 @@ runs:
             state: 'open'
           });
 
+          let issueNumber;
           if (issues.length > 0) {
+            issueNumber = issues[0].number;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: issues[0].number,
+              issue_number: issueNumber,
               body: report
             });
           } else {
-            await github.rest.issues.create({
+            const { data: newIssue } = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: 'Grading Results',
               body: report,
               labels: ['grading']
+            });
+            issueNumber = newIssue.number;
+          }
+
+          // If passed, add 'passed' label and close the issue
+          if (passed) {
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['passed']
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed'
             });
           }
 
