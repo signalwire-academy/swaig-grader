@@ -133,15 +133,18 @@ CHECK_HANDLERS = {
 }
 
 
-def grade(agent_file, config_file):
+def grade(base_path, config_file):
     """Run grading and return results."""
     with open(config_file) as f:
         config = yaml.safe_load(f)
-    
+
+    # Get directory containing config file for relative path resolution
+    config_dir = Path(config_file).parent.parent
+
     assignment = config.get("assignment", {})
     checks = config.get("checks", [])
     feedback = config.get("feedback", {})
-    
+
     results = {
         "assignment": assignment,
         "checks": [],
@@ -151,11 +154,18 @@ def grade(agent_file, config_file):
         "passed": False,
         "feedback": []
     }
-    
+
     for check in checks:
         check_type = check.get("type", "")
         handler = CHECK_HANDLERS.get(check_type)
-        
+
+        # Resolve agent file path from check config or use base_path
+        check_file = check.get("file", "")
+        if check_file:
+            agent_file = str(config_dir / check_file)
+        else:
+            agent_file = base_path
+
         if not handler:
             result = {
                 "id": check.get("id", ""),
