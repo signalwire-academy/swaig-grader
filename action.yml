@@ -31,6 +31,10 @@ inputs:
     description: 'GitHub Classroom link to the next assignment (shown on 100% completion)'
     required: false
     default: ''
+  requires-manual-review:
+    description: 'Tag for manual review instead of closing when passed (for practical exams)'
+    required: false
+    default: 'false'
 
 outputs:
   score:
@@ -301,6 +305,7 @@ runs:
         PASSED: ${{ steps.grade.outputs.passed }}
         PERCENTAGE: ${{ steps.grade.outputs.percentage }}
         NEXT_ASSIGNMENT: ${{ inputs.next-assignment }}
+        REQUIRES_MANUAL_REVIEW: ${{ inputs.requires-manual-review }}
       with:
         script: |
           const fs = require('fs');
@@ -308,11 +313,17 @@ runs:
           const passed = process.env.PASSED === 'true';
           const percentage = parseFloat(process.env.PERCENTAGE);
           const nextAssignment = process.env.NEXT_ASSIGNMENT;
+          const requiresManualReview = process.env.REQUIRES_MANUAL_REVIEW === 'true';
           const isPerfect = percentage === 100.0;
 
-          // Add next assignment link if 100% and link provided
-          if (isPerfect && nextAssignment) {
+          // Add next assignment link if 100% and link provided (only for non-manual-review assignments)
+          if (isPerfect && nextAssignment && !requiresManualReview) {
             report += `\n\n---\n\n🎉 **Perfect score!** Ready for the next challenge?\n\n👉 [**Start Next Assignment**](${nextAssignment})`;
+          }
+
+          // Add manual review notice for practical exams
+          if (passed && requiresManualReview) {
+            report += `\n\n---\n\n📋 **Awaiting Manual Review**\n\nYour submission has passed all automated checks and has been tagged for instructor review. You will receive final results after the manual review is complete.`;
           }
 
           // Find or create grading issue
@@ -343,7 +354,7 @@ runs:
             issueNumber = newIssue.number;
           }
 
-          // If passed, add 'passed' label. Only close if 100%
+          // Handle labels and issue state
           if (passed) {
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
@@ -352,8 +363,16 @@ runs:
               labels: ['passed']
             });
 
-            // Only close the issue if score is 100%
-            if (isPerfect) {
+            if (requiresManualReview) {
+              // For practical exams: add needs-review label, don't close
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                labels: ['needs-review']
+              });
+            } else if (isPerfect) {
+              // For labs: only close the issue if score is 100%
               await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
