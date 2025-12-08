@@ -11,9 +11,12 @@ import yaml
 from pathlib import Path
 
 
-def run_swaig_test(agent_file, args=None, timeout=30):
+def run_swaig_test(agent_file, args=None, timeout=30, agent_class=None):
     """Run swaig-test command."""
-    cmd = ["swaig-test", agent_file] + (args or [])
+    cmd = ["swaig-test", agent_file]
+    if agent_class:
+        cmd.extend(["--agent-class", agent_class])
+    cmd.extend(args or [])
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return result.returncode, result.stdout, result.stderr
@@ -25,13 +28,15 @@ def run_swaig_test(agent_file, args=None, timeout=30):
 
 def check_instantiate(agent_file, config):
     """Check if agent loads without errors."""
-    code, stdout, stderr = run_swaig_test(agent_file, ["--list-tools"])
+    agent_class = config.get("agent_class")
+    code, stdout, stderr = run_swaig_test(agent_file, ["--list-tools"], agent_class=agent_class)
     return code == 0, stderr if code != 0 else ""
 
 
 def check_swml_valid(agent_file, config):
     """Check if SWML is valid."""
-    code, stdout, stderr = run_swaig_test(agent_file, ["--dump-swml", "--raw"])
+    agent_class = config.get("agent_class")
+    code, stdout, stderr = run_swaig_test(agent_file, ["--dump-swml", "--raw"], agent_class=agent_class)
     if code != 0:
         return False, stderr
     try:
@@ -68,7 +73,8 @@ def check_path_exists(data, path):
 
 def check_function_exists(agent_file, config):
     """Check if a function is registered."""
-    code, stdout, stderr = run_swaig_test(agent_file, ["--list-tools"])
+    agent_class = config.get("agent_class")
+    code, stdout, stderr = run_swaig_test(agent_file, ["--list-tools"], agent_class=agent_class)
     if code != 0:
         return False, stderr
     func_name = config.get("function", "")
@@ -79,6 +85,7 @@ def check_function_exists(agent_file, config):
 
 def check_exec(agent_file, config):
     """Execute a function and check output."""
+    agent_class = config.get("agent_class")
     func = config.get("function", "")
     args = config.get("args", {})
 
@@ -86,7 +93,7 @@ def check_exec(agent_file, config):
     for key, value in args.items():
         cmd_args.extend([f"--{key}", str(value)])
 
-    code, stdout, stderr = run_swaig_test(agent_file, cmd_args)
+    code, stdout, stderr = run_swaig_test(agent_file, cmd_args, agent_class=agent_class)
     if code != 0:
         return False, stderr
 
@@ -103,7 +110,8 @@ def check_exec(agent_file, config):
 
 def check_swml_contains(agent_file, config):
     """Check if SWML output contains specific text."""
-    code, stdout, stderr = run_swaig_test(agent_file, ["--dump-swml", "--raw"])
+    agent_class = config.get("agent_class")
+    code, stdout, stderr = run_swaig_test(agent_file, ["--dump-swml", "--raw"], agent_class=agent_class)
     if code != 0:
         return False, stderr
 
