@@ -81,23 +81,38 @@ def check_exec(agent_file, config):
     """Execute a function and check output."""
     func = config.get("function", "")
     args = config.get("args", {})
-    
+
     cmd_args = ["--exec", func]
     for key, value in args.items():
         cmd_args.extend([f"--{key}", str(value)])
-    
+
     code, stdout, stderr = run_swaig_test(agent_file, cmd_args)
     if code != 0:
         return False, stderr
-    
+
     # Check expected output
     expect = config.get("expect", {})
     stdout_lower = stdout.lower()
-    
+
     for substring in expect.get("stdout_contains", []):
         if substring.lower() not in stdout_lower:
             return False, f"Output missing: {substring}"
-    
+
+    return True, ""
+
+
+def check_swml_contains(agent_file, config):
+    """Check if SWML output contains specific text."""
+    code, stdout, stderr = run_swaig_test(agent_file, ["--dump-swml", "--raw"])
+    if code != 0:
+        return False, stderr
+
+    # Check for required text strings
+    for req in config.get("require", []):
+        text = req.get("text", "")
+        if text and text not in stdout:
+            return False, f"SWML missing: {text}"
+
     return True, ""
 
 
@@ -106,6 +121,7 @@ CHECK_HANDLERS = {
     "swml_valid": check_swml_valid,
     "function_exists": check_function_exists,
     "exec": check_exec,
+    "swml_contains": check_swml_contains,
 }
 
 
