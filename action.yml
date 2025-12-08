@@ -390,7 +390,7 @@ runs:
         path: |
           grading-results.json
           grading-report.md
-        retention-days: 90
+        retention-days: 30
 
     - name: Check pass status
       if: steps.check.outputs.exists == 'true' && inputs.fail-on-not-passing == 'true' && steps.grade.outputs.passed == 'false'
